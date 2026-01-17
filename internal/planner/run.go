@@ -1,9 +1,11 @@
 package planner
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +20,10 @@ type RunOptions struct {
 	WorkDir  string
 	Adapter  adapters.AgentAdapter
 	Timeout  time.Duration
+
+	FollowTranscripts bool
+	FollowLines       int
+	FollowWriter      io.Writer
 }
 
 type RunResult struct {
@@ -68,6 +74,12 @@ func RunPlan(ctx context.Context, opts RunOptions) (*RunResult, error) {
 			return result, fmt.Errorf("ensure item dir: %w", err)
 		}
 
+		transcriptPath := filepath.Join(itemDir, "transcript.log")
+		var stopFollow func()
+		if opts.FollowTranscripts && opts.FollowWriter != nil {
+			stopFollow = followTranscript(tailContext(ctx), transcriptPath, opts.FollowLines, opts.FollowWriter, item.ID)
+		}
+
 		startPayload := map[string]any{
 			"run_id":       runID,
 			"run_dir":      runDir,
@@ -109,6 +121,9 @@ func RunPlan(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		}
 
 		adapterResult, runErr := opts.Adapter.Run(ctx, cfg)
+		if stopFollow != nil {
+			stopFollow()
+		}
 
 		finishPayload := map[string]any{
 			"run_id":       runID,
@@ -231,4 +246,135 @@ func validateAgentResult(path string) error {
 		return fmt.Errorf("kr_impact_claim must be a non-empty string")
 	}
 	return nil
+}
+
+func tailContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+
+func followTranscript(ctx context.Context, path string, lines int, w io.Writer, label string) func() {
+	stopCh := make(chan struct{})
+	doneCh := make(chan struct{})
+
+	if lines < 0 {
+		lines = 0
+	}
+	if label == "" {
+		label = filepath.Base(filepath.Dir(path))
+	}
+
+	_, _ = fmt.Fprintf(w, "\n--- %s transcript (%s) ---\n", label, path)
+
+	go func() {
+		defer close(doneCh)
+
+		for {
+			if _, err := os.Stat(path); err == nil {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-stopCh:
+				return
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+
+		f, err := os.Open(path)
+		if err != nil {
+			_, _ = fmt.Fprintf(w, "\n[follow] failed to open transcript: %v\n", err)
+			return
+		}
+		defer func() {
+			_ = f.Close()
+		}()
+
+		if lines > 0 {
+			off, err := startOffsetForLastLines(f, lines)
+			if err == nil && off > 0 {
+				_, _ = f.Seek(off, io.SeekStart)
+			}
+		}
+
+		reader := bufio.NewReaderSize(f, 16*1024)
+		buf := make([]byte, 8*1024)
+		for {
+			n, err := reader.Read(buf)
+			if n > 0 {
+				_, _ = w.Write(buf[:n])
+			}
+			if err == nil {
+				continue
+			}
+			if err == io.EOF {
+				select {
+				case <-stopCh:
+					return
+				case <-ctx.Done():
+					return
+				case <-time.After(200 * time.Millisecond):
+					continue
+				}
+			}
+			_, _ = fmt.Fprintf(w, "\n[follow] transcript read error: %v\n", err)
+			return
+		}
+	}()
+
+	return func() {
+		select {
+		case <-stopCh:
+		default:
+			close(stopCh)
+		}
+		<-doneCh
+	}
+}
+
+func startOffsetForLastLines(f *os.File, lines int) (int64, error) {
+	if lines <= 0 {
+		return 0, nil
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	size := info.Size()
+	if size <= 0 {
+		return 0, nil
+	}
+
+	const blockSize int64 = 32 * 1024
+	remaining := size
+	newlines := 0
+
+	for remaining > 0 {
+		readSize := blockSize
+		if remaining < readSize {
+			readSize = remaining
+		}
+		remaining -= readSize
+
+		b := make([]byte, readSize)
+		_, err := f.ReadAt(b, remaining)
+		if err != nil && err != io.EOF {
+			return 0, err
+		}
+
+		for i := len(b) - 1; i >= 0; i-- {
+			if b[i] != '\n' {
+				continue
+			}
+			newlines++
+			if newlines > lines {
+				return remaining + int64(i) + 1, nil
+			}
+		}
+	}
+
+	return 0, nil
 }

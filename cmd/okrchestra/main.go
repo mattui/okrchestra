@@ -289,6 +289,8 @@ func runPlanRun(args []string) error {
 	adapterName := fs.String("adapter", "codex", "Adapter name")
 	workDir := fs.String("workdir", ".", "Working directory")
 	timeout := fs.Duration("timeout", 0, "Optional per-item timeout (e.g. 10m)")
+	follow := fs.Bool("follow", false, "Stream agent transcript.log while running")
+	followLines := fs.Int("follow-lines", 200, "When following, start from last N lines (0 = from start)")
 	if err := fs.Parse(remaining); err != nil {
 		return err
 	}
@@ -331,10 +333,13 @@ func runPlanRun(args []string) error {
 
 	ctx := context.Background()
 	res, runErr := planner.RunPlan(ctx, planner.RunOptions{
-		PlanPath: absPlan,
-		WorkDir:  absWorkDir,
-		Adapter:  adapter,
-		Timeout:  *timeout,
+		PlanPath:          absPlan,
+		WorkDir:           absWorkDir,
+		Adapter:           adapter,
+		Timeout:           *timeout,
+		FollowTranscripts: *follow,
+		FollowLines:       *followLines,
+		FollowWriter:      os.Stdout,
 	})
 
 	finishPayload := map[string]any{
