@@ -1,0 +1,11 @@
+metrics:
+  - key: manual.test_metric
+    value: 1.2
+    unit: count
+    evidence:
+      - fixture:manual-entry
+  - key: manual.oncall_coverage
+    value: 0.95
+    unit: ratio
+    evidence:
+      - fixture:oncall

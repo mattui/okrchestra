@@ -19,6 +19,15 @@ import (
 
 const appName = "okrchestra"
 
+type workspacePaths struct {
+	Root         string
+	OKRsDir      string
+	CultureDir   string
+	MetricsDir   string
+	ArtifactsDir string
+	AuditDir     string
+}
+
 func main() {
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "%s: OKR-driven agent orchestration\n\n", appName)
@@ -67,6 +76,31 @@ func main() {
 		flag.Usage()
 		os.Exit(1)
 	}
+}
+
+func requireWorkspace(workspace string) (workspacePaths, error) {
+	if strings.TrimSpace(workspace) == "" {
+		return workspacePaths{}, fmt.Errorf("--workspace is required")
+	}
+	abs, err := filepath.Abs(workspace)
+	if err != nil {
+		return workspacePaths{}, fmt.Errorf("resolve workspace: %w", err)
+	}
+	return workspacePaths{
+		Root:         abs,
+		OKRsDir:      filepath.Join(abs, "okrs"),
+		CultureDir:   filepath.Join(abs, "culture"),
+		MetricsDir:   filepath.Join(abs, "metrics"),
+		ArtifactsDir: filepath.Join(abs, "artifacts"),
+		AuditDir:     filepath.Join(abs, "audit"),
+	}, nil
+}
+
+func applyWorkspaceAudit(paths workspacePaths) error {
+	if os.Getenv("OKRCHESTRA_AUDIT_DB") != "" {
+		return nil
+	}
+	return os.Setenv("OKRCHESTRA_AUDIT_DB", filepath.Join(paths.AuditDir, "events.db"))
 }
 
 func runAgent(args []string) error {
@@ -212,8 +246,9 @@ func runPlan(args []string) error {
 func runPlanGenerate(args []string) error {
 	fs := flag.NewFlagSet("plan generate", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	okrsDir := fs.String("okrs-dir", "okrs", "Path to OKR YAML directory")
-	outDir := fs.String("out-dir", filepath.Join("artifacts", "plans"), "Base directory to write plans")
+	workspace := fs.String("workspace", "", "Path to workspace root")
+	okrsDir := fs.String("okrs-dir", "", "Path to OKR YAML directory (default: <workspace>/okrs)")
+	outDir := fs.String("out-dir", "", "Base directory to write plans (default: <workspace>/artifacts/plans)")
 	asOfStr := fs.String("as-of", "", "As-of date (YYYY-MM-DD, default: today UTC)")
 	objectiveID := fs.String("objective-id", "", "Optional objective_id to target")
 	krID := fs.String("kr-id", "", "Optional kr_id to target")
@@ -221,6 +256,20 @@ func runPlanGenerate(args []string) error {
 
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+
+	paths, err := requireWorkspace(*workspace)
+	if err != nil {
+		return err
+	}
+	if err := applyWorkspaceAudit(paths); err != nil {
+		return err
+	}
+	if *okrsDir == "" {
+		*okrsDir = paths.OKRsDir
+	}
+	if *outDir == "" {
+		*outDir = filepath.Join(paths.ArtifactsDir, "plans")
 	}
 
 	asOf := time.Now().UTC().Truncate(24 * time.Hour)
@@ -233,6 +282,7 @@ func runPlanGenerate(args []string) error {
 	}
 
 	startPayload := map[string]any{
+		"workspace":    paths.Root,
 		"okrs_dir":     *okrsDir,
 		"out_dir":      *outDir,
 		"as_of":        asOf.Format("2006-01-02"),
@@ -287,7 +337,8 @@ func runPlanRun(args []string) error {
 	fs := flag.NewFlagSet("plan run", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	adapterName := fs.String("adapter", "codex", "Adapter name")
-	workDir := fs.String("workdir", ".", "Working directory")
+	workspace := fs.String("workspace", "", "Path to workspace root")
+	workDir := fs.String("workdir", "", "Working directory (default: <workspace>)")
 	timeout := fs.Duration("timeout", 0, "Optional per-item timeout (e.g. 10m)")
 	follow := fs.Bool("follow", false, "Stream agent transcript.log while running")
 	followLines := fs.Int("follow-lines", 200, "When following, start from last N lines (0 = from start)")
@@ -300,6 +351,21 @@ func runPlanRun(args []string) error {
 			return fmt.Errorf("plan path is required")
 		}
 		planArg = rest[0]
+	}
+
+	paths, err := requireWorkspace(*workspace)
+	if err != nil {
+		return err
+	}
+	if err := applyWorkspaceAudit(paths); err != nil {
+		return err
+	}
+	if *workDir == "" {
+		*workDir = paths.Root
+	}
+
+	if !filepath.IsAbs(planArg) {
+		planArg = filepath.Join(paths.Root, planArg)
 	}
 
 	absPlan, err := filepath.Abs(planArg)
@@ -322,10 +388,11 @@ func runPlanRun(args []string) error {
 	}
 
 	startPayload := map[string]any{
-		"plan":    absPlan,
-		"adapter": adapter.Name(),
-		"workdir": absWorkDir,
-		"timeout": timeout.String(),
+		"workspace": paths.Root,
+		"plan":      absPlan,
+		"adapter":   adapter.Name(),
+		"workdir":   absWorkDir,
+		"timeout":   timeout.String(),
 	}
 	if err := audit.LogEvent("cli", "plan_run_started", startPayload); err != nil {
 		fmt.Fprintln(os.Stderr, "audit log failed:", err)
@@ -467,13 +534,38 @@ func runKRMeasure(args []string) error {
 	fs := flag.NewFlagSet("kr measure", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	asOfStr := fs.String("as-of", "", "As-of date (YYYY-MM-DD, default: today UTC)")
-	repoDir := fs.String("repo-dir", ".", "Git repo directory for git metrics")
-	snapshotsDir := fs.String("snapshots-dir", filepath.Join("metrics", "snapshots"), "Directory to write metric snapshots")
-	ciReport := fs.String("ci-report", filepath.Join("metrics", "ci_report.json"), "Path to CI JSON report")
-	manualPath := fs.String("manual", filepath.Join("metrics", "manual.yml"), "Path to manual metrics YAML")
+	workspace := fs.String("workspace", "", "Path to workspace root")
+	repoDir := fs.String("repo-dir", "", "Git repo directory for git metrics (default: <workspace>)")
+	metricsDir := fs.String("metrics-dir", "", "Base directory for metric inputs/outputs (default: <workspace>/metrics)")
+	snapshotsDir := fs.String("snapshots-dir", "", "Directory to write metric snapshots (default: <metrics-dir>/snapshots)")
+	ciReport := fs.String("ci-report", "", "Path to CI JSON report (default: <metrics-dir>/ci_report.json)")
+	manualPath := fs.String("manual", "", "Path to manual metrics YAML (default: <metrics-dir>/manual.yml)")
 
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+
+	paths, err := requireWorkspace(*workspace)
+	if err != nil {
+		return err
+	}
+	if err := applyWorkspaceAudit(paths); err != nil {
+		return err
+	}
+	if *repoDir == "" {
+		*repoDir = paths.Root
+	}
+	if *metricsDir == "" {
+		*metricsDir = paths.MetricsDir
+	}
+	if *snapshotsDir == "" {
+		*snapshotsDir = filepath.Join(*metricsDir, "snapshots")
+	}
+	if *ciReport == "" {
+		*ciReport = filepath.Join(*metricsDir, "ci_report.json")
+	}
+	if *manualPath == "" {
+		*manualPath = filepath.Join(*metricsDir, "manual.yml")
 	}
 
 	asOf := time.Now().UTC().Truncate(24 * time.Hour)
@@ -514,13 +606,17 @@ func runKRScore(args []string) error {
 	fs := flag.NewFlagSet("kr score", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	okrsDir := fs.String("okrs-dir", "okrs", "Path to OKR YAML directory")
-	snapshotsDir := fs.String("snapshots-dir", filepath.Join("metrics", "snapshots"), "Directory to read metric snapshots")
+	metricsDir := fs.String("metrics-dir", "metrics", "Base directory for metric inputs")
+	snapshotsDir := fs.String("snapshots-dir", "", "Directory to read metric snapshots (default: <metrics-dir>/snapshots)")
 	snapshotPath := fs.String("snapshot", "", "Path to snapshot JSON (default: latest in snapshots-dir)")
 	artifactsDir := fs.String("artifacts-dir", "artifacts", "Directory to write score report")
 	output := fs.String("output", "", "Output report path (default: artifacts/kr_score_<as-of>.json)")
 
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *snapshotsDir == "" {
+		*snapshotsDir = filepath.Join(*metricsDir, "snapshots")
 	}
 
 	path := *snapshotPath

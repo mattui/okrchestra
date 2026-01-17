@@ -1,0 +1,16 @@
+scope: org
+objectives:
+  - objective_id: OBJ-TEST-SMOKE
+    objective: Validate OKRchestra smoke workflows.
+    owner_id: team-test
+    key_results:
+      - kr_id: KR-TEST-MANUAL
+        description: Keep a manual test metric in range.
+        owner_id: team-test
+        metric_key: manual.test_metric
+        baseline: 1
+        target: 2
+        confidence: 0.6
+        status: in_progress
+        evidence:
+          - fixture:manual-test-metric

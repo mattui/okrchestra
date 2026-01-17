@@ -1,0 +1,16 @@
+scope: team
+objectives:
+  - objective_id: OBJ-TEAM-HEALTH
+    objective: Maintain healthy team delivery signals.
+    owner_id: team-test
+    key_results:
+      - kr_id: KR-TEAM-ONCALL
+        description: Keep on-call coverage above target.
+        owner_id: team-test
+        metric_key: manual.oncall_coverage
+        baseline: 0.9
+        target: 1.0
+        confidence: 0.7
+        status: in_progress
+        evidence:
+          - fixture:oncall-coverage
