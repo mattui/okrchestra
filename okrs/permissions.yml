@@ -1,0 +1,6 @@
+permissions:
+  read:
+    - all
+  write:
+    - owner_id_match
+    - delegated_explicitly

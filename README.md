@@ -17,3 +17,10 @@ go build ./cmd/okrchestra
 ```bash
 ./okrchestra --help
 ```
+
+## Culture, OKRs, and Guardrails
+
+- Operational values: `culture/values.md`
+- Engineering standards and agent guardrails: `culture/standards.md`
+- OKR schema and examples: `okrs/schema.md`, `okrs/org.yml`
+- Permissions model: `okrs/permissions.yml`

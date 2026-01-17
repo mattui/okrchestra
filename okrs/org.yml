@@ -1,0 +1,70 @@
+scope: org
+objectives:
+  - objective_id: OBJ-PLATFORM-RELIABILITY
+    objective: Improve platform reliability and observability for OKRchestra.
+    owner_id: team-platform
+    key_results:
+      - kr_id: KR-UPTIME-99-9
+        description: Increase API uptime to 99.9% over the quarter.
+        owner_id: team-platform
+        metric_key: api.uptime.pct
+        baseline: 99.3
+        target: 99.9
+        confidence: 0.55
+        status: in_progress
+        evidence:
+          - monitoring:uptime-report:2025-01
+      - kr_id: KR-LATENCY-P95
+        description: Reduce P95 request latency to 350ms.
+        owner_id: team-platform
+        metric_key: api.latency.p95_ms
+        baseline: 520
+        target: 350
+        confidence: 0.45
+        status: in_progress
+        evidence:
+          - tracing:latency-baseline:2025-01
+      - kr_id: KR-ALERT-COVERAGE
+        description: Achieve 90% SLO alert coverage across critical services.
+        owner_id: team-platform
+        metric_key: slo.alert.coverage.pct
+        baseline: 62
+        target: 90
+        confidence: 0.5
+        status: not_started
+        evidence:
+          - audit:slo-coverage:2025-01
+  - objective_id: OBJ-ADOPTION-GROWTH
+    objective: Grow OKRchestra adoption across product teams.
+    owner_id: team-enablement
+    key_results:
+      - kr_id: KR-TEAMS-ONBOARDED
+        description: Onboard 8 product teams to active OKR usage.
+        owner_id: team-enablement
+        metric_key: adoption.teams.active
+        baseline: 3
+        target: 8
+        confidence: 0.6
+        status: in_progress
+        evidence:
+          - crm:team-onboarding:2025-01
+      - kr_id: KR-WEEKLY-ACTIVE
+        description: Reach 120 weekly active users in OKRchestra.
+        owner_id: team-enablement
+        metric_key: product.weekly_active_users
+        baseline: 48
+        target: 120
+        confidence: 0.4
+        status: in_progress
+        evidence:
+          - analytics:wau:2025-01
+      - kr_id: KR-TEMPLATE-ADOPTION
+        description: 70% of teams use standardized OKR templates.
+        owner_id: team-enablement
+        metric_key: okr.template.adoption.pct
+        baseline: 20
+        target: 70
+        confidence: 0.35
+        status: not_started
+        evidence:
+          - survey:template-usage:2025-01
