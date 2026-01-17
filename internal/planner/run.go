@@ -192,6 +192,7 @@ func renderPrompt(item PlanItem, itemDir string) string {
 	b.WriteString("- `summary` (string)\n")
 	b.WriteString("- `proposed_changes` (array of strings)\n")
 	b.WriteString("- `kr_impact_claim` (string)\n\n")
+	b.WriteString("Do not include additional top-level keys.\n\n")
 	b.WriteString("If you made no code changes, keep `proposed_changes` empty but explain why in `summary`.\n")
 	return b.String()
 }

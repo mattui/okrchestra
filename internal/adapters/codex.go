@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // CodexAdapter shells out to the codex CLI.
@@ -112,30 +113,55 @@ func (a *CodexAdapter) Run(ctx context.Context, cfg RunConfig) (*RunResult, erro
 		return cmd.Run()
 	}
 
-	if err := runOnce(cfg.Env); err != nil {
-		result.ExitCode = exitCodeFromError(err)
+	envAttempts := []map[string]string{cfg.Env}
+	if cfg.Env == nil {
+		envAttempts = []map[string]string{nil}
+	}
 
-		// If Codex can't access its default session directory (common in sandboxed envs),
-		// retry once with an isolated CODEX_HOME under the run artifacts.
-		if shouldRetryWithIsolatedCodexHome(transcriptPath) && (cfg.Env == nil || cfg.Env["CODEX_HOME"] == "") {
-			if cfg.Env == nil {
-				cfg.Env = map[string]string{}
-			}
-			cfg.Env["CODEX_HOME"] = filepath.Join(artifactsDir, "codex_home")
-			if mkErr := os.MkdirAll(cfg.Env["CODEX_HOME"], 0o755); mkErr != nil {
+	var lastErr error
+	for idx, env := range envAttempts {
+		tryEnv := env
+		for attempt := 0; attempt < 2; attempt++ {
+			if err := runOnce(tryEnv); err != nil {
+				lastErr = err
+				result.ExitCode = exitCodeFromError(err)
+
+				// If Codex can't access its default session directory (common in sandboxed envs),
+				// retry once with an isolated CODEX_HOME under the run artifacts.
+				if attempt == 0 && shouldRetryWithIsolatedCodexHome(transcriptPath) && (tryEnv == nil || tryEnv["CODEX_HOME"] == "") {
+					if tryEnv == nil {
+						tryEnv = map[string]string{}
+					}
+					tryEnv["CODEX_HOME"] = filepath.Join(artifactsDir, "codex_home")
+					if mkErr := os.MkdirAll(tryEnv["CODEX_HOME"], 0o755); mkErr != nil {
+						return result, err
+					}
+					continue
+				}
+
+				// Best-effort retry for transient network failures after Codex's internal reconnects.
+				if attempt == 0 && shouldRetryAfterNetworkError(transcriptPath) {
+					select {
+					case <-runCtx.Done():
+						return result, err
+					case <-time.After(2 * time.Second):
+					}
+					continue
+				}
+
+				if idx < len(envAttempts)-1 {
+					break
+				}
 				return result, err
-			}
-			if retryErr := runOnce(cfg.Env); retryErr != nil {
-				result.ExitCode = exitCodeFromError(retryErr)
-				return result, retryErr
 			}
 			return result, nil
 		}
-
-		return result, err
 	}
 
-	return result, nil
+	if lastErr != nil {
+		return result, lastErr
+	}
+	return result, fmt.Errorf("codex run failed with no error")
 }
 
 func shouldRetryWithIsolatedCodexHome(transcriptPath string) bool {
@@ -153,10 +179,23 @@ func shouldRetryWithIsolatedCodexHome(transcriptPath string) bool {
 	return false
 }
 
+func shouldRetryAfterNetworkError(transcriptPath string) bool {
+	data, err := os.ReadFile(transcriptPath)
+	if err != nil {
+		return false
+	}
+	text := string(data)
+	if strings.Contains(text, "error=network error:") &&
+		strings.Contains(text, "error sending request for url (https://api.openai.com/v1/responses)") {
+		return true
+	}
+	return false
+}
+
 const defaultResultSchema = `{
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
-  "additionalProperties": true,
+  "additionalProperties": false,
   "required": ["summary", "proposed_changes", "kr_impact_claim"],
   "properties": {
     "summary": { "type": "string" },
