@@ -67,17 +67,12 @@ func New(cfg Config) (*Daemon, error) {
 		Workspace:    cfg.Workspace,
 		Store:        store,
 		Scheduler:    scheduler,
-		Handlers:     make(map[string]HandlerFunc),
+		Handlers:     DefaultHandlers(),
 		AuditLogger:  audit.NewLogger(cfg.Workspace.AuditDBPath),
 		LeaseOwner:   cfg.LeaseOwner,
 		LeaseFor:     cfg.LeaseFor,
 		PollInterval: cfg.PollInterval,
 	}
-
-	// Register default placeholder handlers
-	d.RegisterHandler("kr_measure", placeholderKRMeasureHandler)
-	d.RegisterHandler("plan_generate", placeholderPlanGenerateHandler)
-	d.RegisterHandler("plan_execute", placeholderPlanExecuteHandler)
 
 	return d, nil
 }
@@ -208,27 +203,4 @@ func (d *Daemon) claimAndExecute(ctx context.Context) error {
 // Close closes the daemon's store.
 func (d *Daemon) Close() error {
 	return d.Store.Close()
-}
-
-// Placeholder handlers (no real work, just return success)
-
-func placeholderKRMeasureHandler(ctx context.Context, ws *workspace.Workspace, job *Job) (any, error) {
-	return map[string]any{
-		"status": "placeholder_kr_measure",
-		"note":   "kr_measure handler not yet implemented",
-	}, nil
-}
-
-func placeholderPlanGenerateHandler(ctx context.Context, ws *workspace.Workspace, job *Job) (any, error) {
-	return map[string]any{
-		"status": "placeholder_plan_generate",
-		"note":   "plan_generate handler not yet implemented",
-	}, nil
-}
-
-func placeholderPlanExecuteHandler(ctx context.Context, ws *workspace.Workspace, job *Job) (any, error) {
-	return map[string]any{
-		"status": "placeholder_plan_execute",
-		"note":   "plan_execute handler not yet implemented",
-	}, nil
 }
