@@ -1,0 +1,21 @@
+# Binaries
+okrchestra
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Build artifacts
+bin/
+*.out
+*.test
+
+# IDE/editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
