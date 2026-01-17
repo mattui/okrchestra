@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // CodexAdapter shells out to the codex CLI.
@@ -48,25 +49,7 @@ func (a *CodexAdapter) Run(ctx context.Context, cfg RunConfig) (*RunResult, erro
 		return nil, fmt.Errorf("create artifacts dir: %w", err)
 	}
 
-	if cfg.Env == nil {
-		cfg.Env = map[string]string{}
-	}
-	if cfg.Env["CODEX_HOME"] == "" {
-		codexHome := filepath.Join(artifactsDir, "codex_home")
-		if err := os.MkdirAll(codexHome, 0o755); err != nil {
-			return nil, fmt.Errorf("create CODEX_HOME: %w", err)
-		}
-		cfg.Env["CODEX_HOME"] = codexHome
-	}
-
 	transcriptPath := filepath.Join(artifactsDir, "transcript.log")
-	transcriptFile, err := os.OpenFile(transcriptPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-	if err != nil {
-		return nil, fmt.Errorf("open transcript: %w", err)
-	}
-	defer func() {
-		_ = transcriptFile.Close()
-	}()
 
 	resultPath := filepath.Join(artifactsDir, "result.json")
 	if cfg.Env != nil {
@@ -96,21 +79,6 @@ func (a *CodexAdapter) Run(ctx context.Context, cfg RunConfig) (*RunResult, erro
 		"-",
 	}
 
-	cmd := exec.CommandContext(runCtx, "codex", args...)
-	cmd.Dir = workDir
-	cmd.Stdout = transcriptFile
-	cmd.Stderr = io.MultiWriter(transcriptFile)
-	cmd.Env = mergeEnv(os.Environ(), cfg.Env)
-
-	promptFile, err := os.Open(cfg.PromptPath)
-	if err != nil {
-		return nil, fmt.Errorf("open prompt: %w", err)
-	}
-	defer func() {
-		_ = promptFile.Close()
-	}()
-	cmd.Stdin = promptFile
-
 	result := &RunResult{
 		ExitCode:       0,
 		TranscriptPath: transcriptPath,
@@ -118,12 +86,71 @@ func (a *CodexAdapter) Run(ctx context.Context, cfg RunConfig) (*RunResult, erro
 		SummaryPath:    resultPath,
 	}
 
-	if err := cmd.Run(); err != nil {
+	runOnce := func(env map[string]string) error {
+		transcriptFile, err := os.OpenFile(transcriptPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+		if err != nil {
+			return fmt.Errorf("open transcript: %w", err)
+		}
+		defer func() {
+			_ = transcriptFile.Close()
+		}()
+
+		promptFile, err := os.Open(cfg.PromptPath)
+		if err != nil {
+			return fmt.Errorf("open prompt: %w", err)
+		}
+		defer func() {
+			_ = promptFile.Close()
+		}()
+
+		cmd := exec.CommandContext(runCtx, "codex", args...)
+		cmd.Dir = workDir
+		cmd.Stdout = transcriptFile
+		cmd.Stderr = io.MultiWriter(transcriptFile)
+		cmd.Env = mergeEnv(os.Environ(), env)
+		cmd.Stdin = promptFile
+		return cmd.Run()
+	}
+
+	if err := runOnce(cfg.Env); err != nil {
 		result.ExitCode = exitCodeFromError(err)
+
+		// If Codex can't access its default session directory (common in sandboxed envs),
+		// retry once with an isolated CODEX_HOME under the run artifacts.
+		if shouldRetryWithIsolatedCodexHome(transcriptPath) && (cfg.Env == nil || cfg.Env["CODEX_HOME"] == "") {
+			if cfg.Env == nil {
+				cfg.Env = map[string]string{}
+			}
+			cfg.Env["CODEX_HOME"] = filepath.Join(artifactsDir, "codex_home")
+			if mkErr := os.MkdirAll(cfg.Env["CODEX_HOME"], 0o755); mkErr != nil {
+				return result, err
+			}
+			if retryErr := runOnce(cfg.Env); retryErr != nil {
+				result.ExitCode = exitCodeFromError(retryErr)
+				return result, retryErr
+			}
+			return result, nil
+		}
+
 		return result, err
 	}
 
 	return result, nil
+}
+
+func shouldRetryWithIsolatedCodexHome(transcriptPath string) bool {
+	data, err := os.ReadFile(transcriptPath)
+	if err != nil {
+		return false
+	}
+	text := string(data)
+	if strings.Contains(text, "Codex cannot access session files") && strings.Contains(text, "permission denied") {
+		return true
+	}
+	if strings.Contains(text, ".codex/sessions") && strings.Contains(text, "permission denied") {
+		return true
+	}
+	return false
 }
 
 const defaultResultSchema = `{

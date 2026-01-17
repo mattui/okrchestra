@@ -135,6 +135,9 @@ func RunPlan(ctx context.Context, opts RunOptions) (*RunResult, error) {
 				finishPayload["error"] = runErr.Error()
 				finishPayload["result_error"] = validateErr.Error()
 				_ = audit.LogEvent("scheduler", "plan_item_finished", finishPayload)
+				if adapterResult != nil && adapterResult.TranscriptPath != "" {
+					return result, fmt.Errorf("agent run failed for item %s (see %s): %w", item.ID, adapterResult.TranscriptPath, runErr)
+				}
 				return result, fmt.Errorf("agent run failed for item %s: %w", item.ID, runErr)
 			}
 		}
