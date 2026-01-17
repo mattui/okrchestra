@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 )
 
 // MockAdapter is a deterministic, offline adapter used for end-to-end testing of the scheduler.
@@ -54,10 +53,11 @@ func (a *MockAdapter) Run(ctx context.Context, cfg RunConfig) (*RunResult, error
 	}
 
 	payload := map[string]any{
+		"schema_version":   "1.0",
 		"summary":          "mock run completed (no changes applied)",
 		"proposed_changes": []string{},
+		"kr_targets":       []string{},
 		"kr_impact_claim":  fmt.Sprintf("No claim (mock adapter). Metric key: %s.", metricKey),
-		"generated_at":     time.Now().UTC().Format(time.RFC3339),
 	}
 
 	data, err := json.MarshalIndent(payload, "", "  ")

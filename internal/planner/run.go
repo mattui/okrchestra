@@ -3,7 +3,6 @@ package planner
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +12,7 @@ import (
 
 	"okrchestra/internal/adapters"
 	"okrchestra/internal/audit"
+	"okrchestra/internal/guardrails"
 )
 
 type RunOptions struct {
@@ -115,6 +115,16 @@ func RunPlan(ctx context.Context, opts RunOptions) (*RunResult, error) {
 			return result, fmt.Errorf("write prompt: %w", err)
 		}
 
+		// Capture OKRs directory state before adapter run
+		wsRoot, err := guardrails.NormalizeWorkDir(opts.WorkDir)
+		if err != nil {
+			return result, fmt.Errorf("normalize work dir: %w", err)
+		}
+		integrityCheck, err := guardrails.NewIntegrityCheck(wsRoot)
+		if err != nil {
+			return result, fmt.Errorf("create integrity check: %w", err)
+		}
+
 		cfg := adapters.RunConfig{
 			PromptPath:   promptPath,
 			WorkDir:      opts.WorkDir,
@@ -138,6 +148,46 @@ func RunPlan(ctx context.Context, opts RunOptions) (*RunResult, error) {
 			stopFollow()
 		}
 
+		// Check for unauthorized OKRs directory modifications
+		if err := integrityCheck.CaptureAfter(); err != nil {
+			return result, fmt.Errorf("capture post-run snapshot: %w", err)
+		}
+
+		if integrityCheck.HasChanges() {
+			changedFiles, _ := integrityCheck.GetChangedFiles()
+			
+			// Attempt to revert the unauthorized changes
+			revertErr := guardrails.RevertOKRs(wsRoot)
+			
+			// Build violation record
+			violation := guardrails.BuildViolation("okrs_direct_edit", map[string]any{
+				"message":       "Agent directly modified okrs/ directory, which is prohibited by AGENTS.md",
+				"changed_files": changedFiles,
+				"reverted":      revertErr == nil,
+				"revert_error":  guardrails.SanitizeErrorForJSON(revertErr),
+				"item_id":       item.ID,
+				"run_id":        runID,
+			})
+
+			// Write violation.json
+			if err := guardrails.WriteViolation(itemDir, violation); err != nil {
+				return result, fmt.Errorf("write violation record: %w", err)
+			}
+
+			// Log audit event
+			logEvent("daemon", "guardrail_violation", map[string]any{
+				"violation_type": "okrs_direct_edit",
+				"run_id":         runID,
+				"plan_id":        plan.ID,
+				"plan_item_id":   item.ID,
+				"item_dir":       itemDir,
+				"changed_files":  changedFiles,
+				"reverted":       revertErr == nil,
+			})
+
+			return result, fmt.Errorf("guardrail violation: agent modified okrs/ directory (see %s/violation.json)", itemDir)
+		}
+
 		finishPayload := map[string]any{
 			"run_id":       runID,
 			"run_dir":      runDir,
@@ -155,7 +205,7 @@ func RunPlan(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		}
 
 		resultPath := filepath.Join(itemDir, "result.json")
-		validateErr := validateAgentResult(resultPath)
+		validateErr := guardrails.ValidateResultJSON(resultPath)
 		if runErr != nil {
 			if validateErr == nil {
 				finishPayload["adapter_error"] = runErr.Error()
@@ -217,49 +267,16 @@ func renderPrompt(item PlanItem, itemDir string) string {
 	b.WriteString("Write `result.json` to the artifacts directory for this item:\n\n")
 	fmt.Fprintf(&b, "- %s\n\n", filepath.Join(itemDir, "result.json"))
 	b.WriteString("The file must be valid JSON and include these fields:\n")
+	b.WriteString("- `schema_version` (string, must be \"1.0\")\n")
 	b.WriteString("- `summary` (string)\n")
 	b.WriteString("- `proposed_changes` (array of strings)\n")
+	b.WriteString("- `kr_targets` (array of strings, KR IDs affected)\n")
 	b.WriteString("- `kr_impact_claim` (string)\n\n")
 	b.WriteString("Do not include additional top-level keys.\n\n")
 	b.WriteString("If you made no code changes, keep `proposed_changes` empty but explain why in `summary`.\n")
 	return b.String()
 }
 
-func validateAgentResult(path string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("read result.json: %w", err)
-	}
-
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(data, &obj); err != nil {
-		return fmt.Errorf("parse result.json: %w", err)
-	}
-
-	if _, ok := obj["summary"]; !ok {
-		return fmt.Errorf("missing field: summary")
-	}
-	if _, ok := obj["proposed_changes"]; !ok {
-		return fmt.Errorf("missing field: proposed_changes")
-	}
-	if _, ok := obj["kr_impact_claim"]; !ok {
-		return fmt.Errorf("missing field: kr_impact_claim")
-	}
-
-	var summary string
-	if err := json.Unmarshal(obj["summary"], &summary); err != nil || strings.TrimSpace(summary) == "" {
-		return fmt.Errorf("summary must be a non-empty string")
-	}
-	var changes []string
-	if err := json.Unmarshal(obj["proposed_changes"], &changes); err != nil {
-		return fmt.Errorf("proposed_changes must be an array of strings")
-	}
-	var claim string
-	if err := json.Unmarshal(obj["kr_impact_claim"], &claim); err != nil || strings.TrimSpace(claim) == "" {
-		return fmt.Errorf("kr_impact_claim must be a non-empty string")
-	}
-	return nil
-}
 
 func tailContext(ctx context.Context) context.Context {
 	if ctx == nil {
