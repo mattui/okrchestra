@@ -465,6 +465,7 @@ func runKRMeasure(args []string) error {
 	repoDir := fs.String("repo-dir", ".", "Git repo directory for git metrics")
 	snapshotsDir := fs.String("snapshots-dir", filepath.Join("metrics", "snapshots"), "Directory to write metric snapshots")
 	ciReport := fs.String("ci-report", filepath.Join("metrics", "ci_report.json"), "Path to CI JSON report")
+	monitoringReport := fs.String("monitoring-report", filepath.Join("metrics", "monitoring_report.json"), "Path to monitoring JSON report")
 	manualPath := fs.String("manual", filepath.Join("metrics", "manual.yml"), "Path to manual metrics YAML")
 
 	if err := fs.Parse(args); err != nil {
@@ -483,6 +484,7 @@ func runKRMeasure(args []string) error {
 	providers := []metrics.Provider{
 		&metrics.GitProvider{RepoDir: *repoDir, AsOf: asOf},
 		&metrics.CIProvider{ReportPath: *ciReport, AsOf: asOf},
+		&metrics.MonitoringProvider{ReportPath: *monitoringReport, AsOf: asOf},
 		&metrics.ManualProvider{Path: *manualPath, AsOf: asOf},
 	}
 
