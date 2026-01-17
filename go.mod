@@ -2,7 +2,11 @@ module okrchestra
 
 go 1.25.6
 
-require modernc.org/sqlite v1.27.0
+require (
+	github.com/pmezard/go-difflib v1.0.0
+	gopkg.in/yaml.v3 v3.0.1
+	modernc.org/sqlite v1.27.0
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
