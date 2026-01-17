@@ -2,14 +2,17 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"okrchestra/internal/adapters"
 	"okrchestra/internal/audit"
+	"okrchestra/internal/metrics"
 	"okrchestra/internal/okrstore"
 )
 
@@ -43,8 +46,13 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-	case "okr", "kr":
+	case "okr":
 		if err := runOKR(args[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	case "kr":
+		if err := runKR(args[1:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -165,6 +173,21 @@ func runOKR(args []string) error {
 	}
 }
 
+func runKR(args []string) error {
+	if len(args) == 0 || args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
+		return fmt.Errorf("%s kr: missing subcommand", appName)
+	}
+
+	switch args[0] {
+	case "measure":
+		return runKRMeasure(args[1:])
+	case "score":
+		return runKRScore(args[1:])
+	default:
+		return fmt.Errorf("%s kr: unknown subcommand %q", appName, args[0])
+	}
+}
+
 func runOKRPropose(args []string) error {
 	fs := flag.NewFlagSet("okr propose", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -259,5 +282,109 @@ func runOKRApply(args []string) error {
 	_ = audit.LogEvent("cli", "okr_apply_finished", finishPayload)
 
 	fmt.Fprintf(os.Stdout, "Applied proposal %s to %s\n", meta.ID, meta.OKRsDir)
+	return nil
+}
+
+func runKRMeasure(args []string) error {
+	fs := flag.NewFlagSet("kr measure", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	asOfStr := fs.String("as-of", "", "As-of date (YYYY-MM-DD, default: today UTC)")
+	repoDir := fs.String("repo-dir", ".", "Git repo directory for git metrics")
+	snapshotsDir := fs.String("snapshots-dir", filepath.Join("metrics", "snapshots"), "Directory to write metric snapshots")
+	ciReport := fs.String("ci-report", filepath.Join("metrics", "ci_report.json"), "Path to CI JSON report")
+	manualPath := fs.String("manual", filepath.Join("metrics", "manual.yml"), "Path to manual metrics YAML")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	asOf := time.Now().UTC().Truncate(24 * time.Hour)
+	if *asOfStr != "" {
+		parsed, err := time.ParseInLocation("2006-01-02", *asOfStr, time.UTC)
+		if err != nil {
+			return fmt.Errorf("parse --as-of: %w", err)
+		}
+		asOf = parsed.UTC().Truncate(24 * time.Hour)
+	}
+
+	providers := []metrics.Provider{
+		&metrics.GitProvider{RepoDir: *repoDir, AsOf: asOf},
+		&metrics.CIProvider{ReportPath: *ciReport, AsOf: asOf},
+		&metrics.ManualProvider{Path: *manualPath, AsOf: asOf},
+	}
+
+	ctx := context.Background()
+	points, err := metrics.CollectAll(ctx, providers)
+	if err != nil {
+		return err
+	}
+
+	snapshotPath := metrics.SnapshotPathForDate(*snapshotsDir, asOf)
+	snapshot := metrics.Snapshot{
+		AsOf:   asOf.Format("2006-01-02"),
+		Points: points,
+	}
+	if err := metrics.WriteSnapshot(snapshotPath, snapshot); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(os.Stdout, "Wrote snapshot: %s\n", snapshotPath)
+	return nil
+}
+
+func runKRScore(args []string) error {
+	fs := flag.NewFlagSet("kr score", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	okrsDir := fs.String("okrs-dir", "okrs", "Path to OKR YAML directory")
+	snapshotsDir := fs.String("snapshots-dir", filepath.Join("metrics", "snapshots"), "Directory to read metric snapshots")
+	snapshotPath := fs.String("snapshot", "", "Path to snapshot JSON (default: latest in snapshots-dir)")
+	artifactsDir := fs.String("artifacts-dir", "artifacts", "Directory to write score report")
+	output := fs.String("output", "", "Output report path (default: artifacts/kr_score_<as-of>.json)")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	path := *snapshotPath
+	if path == "" {
+		latest, err := metrics.LatestSnapshotPath(*snapshotsDir)
+		if err != nil {
+			return err
+		}
+		path = latest
+	}
+
+	snapshot, err := metrics.LoadSnapshot(path)
+	if err != nil {
+		return err
+	}
+
+	store, err := okrstore.LoadFromDir(*okrsDir)
+	if err != nil {
+		return err
+	}
+
+	report, err := metrics.ScoreKRs(store, snapshot, path)
+	if err != nil {
+		return err
+	}
+
+	outPath := *output
+	if outPath == "" {
+		outPath = filepath.Join(*artifactsDir, fmt.Sprintf("kr_score_%s.json", report.AsOf))
+	}
+	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+		return fmt.Errorf("ensure artifacts dir: %w", err)
+	}
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal score report: %w", err)
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(outPath, data, 0o644); err != nil {
+		return fmt.Errorf("write score report: %w", err)
+	}
+
+	fmt.Fprintf(os.Stdout, "Wrote score report: %s\n", outPath)
 	return nil
 }
