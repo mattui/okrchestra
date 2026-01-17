@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -1161,6 +1162,16 @@ func runDaemon(args []string, workspacePath string) error {
 		return runDaemonStatus(args[1:], workspacePath)
 	case "enqueue":
 		return runDaemonEnqueue(args[1:], workspacePath)
+	case "install":
+		return runDaemonInstall(args[1:], workspacePath)
+	case "uninstall":
+		return runDaemonUninstall(args[1:], workspacePath)
+	case "start":
+		return runDaemonStart(args[1:], workspacePath)
+	case "stop":
+		return runDaemonStop(args[1:], workspacePath)
+	case "logs":
+		return runDaemonLogs(args[1:], workspacePath)
 	default:
 		return fmt.Errorf("%s daemon: unknown subcommand %q", appName, args[0])
 	}
@@ -1324,6 +1335,218 @@ func runDaemonEnqueue(args []string, workspacePath string) error {
 		fmt.Fprintf(os.Stdout, "Enqueued job: %s\n", jobID)
 	} else {
 		fmt.Fprintf(os.Stdout, "Job already exists: %s\n", jobID)
+	}
+
+	return nil
+}
+
+func runDaemonInstall(args []string, workspacePath string) error {
+	fs := flag.NewFlagSet("daemon install", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	resolved, err := resolveWorkspaceAndOverrides(workspacePath, workspaceOverrides{})
+	if err != nil {
+		return err
+	}
+	if err := resolved.Workspace.EnsureDirs(); err != nil {
+		return err
+	}
+
+	// Get the current binary path
+	binaryPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("get executable path: %w", err)
+	}
+
+	logger := audit.NewLogger(resolved.AuditDB)
+	startPayload := map[string]any{
+		"workspace":   resolved.Workspace.Root,
+		"binary_path": binaryPath,
+	}
+	if err := logger.LogEvent("cli", "daemon_install_started", startPayload); err != nil {
+		fmt.Fprintln(os.Stderr, "audit log failed:", err)
+	}
+
+	// Install the LaunchAgent
+	if err := daemon.Install(resolved.Workspace, binaryPath); err != nil {
+		finishPayload := map[string]any{
+			"workspace": resolved.Workspace.Root,
+			"error":     err.Error(),
+		}
+		_ = logger.LogEvent("cli", "daemon_install_finished", finishPayload)
+		return err
+	}
+
+	plistPath, _ := daemon.PlistPath(resolved.Workspace.Root)
+	finishPayload := map[string]any{
+		"workspace":  resolved.Workspace.Root,
+		"plist_path": plistPath,
+	}
+	_ = logger.LogEvent("cli", "daemon_install_finished", finishPayload)
+
+	fmt.Fprintf(os.Stdout, "Installed LaunchAgent: %s\n", plistPath)
+	fmt.Fprintf(os.Stdout, "Next: %s daemon start --workspace %s\n", appName, resolved.Workspace.Root)
+	return nil
+}
+
+func runDaemonUninstall(args []string, workspacePath string) error {
+	fs := flag.NewFlagSet("daemon uninstall", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	resolved, err := resolveWorkspaceAndOverrides(workspacePath, workspaceOverrides{})
+	if err != nil {
+		return err
+	}
+
+	logger := audit.NewLogger(resolved.AuditDB)
+	startPayload := map[string]any{
+		"workspace": resolved.Workspace.Root,
+	}
+	if err := logger.LogEvent("cli", "daemon_uninstall_started", startPayload); err != nil {
+		fmt.Fprintln(os.Stderr, "audit log failed:", err)
+	}
+
+	// Try to stop first (ignore errors if already stopped)
+	_ = daemon.Stop(resolved.Workspace)
+
+	// Uninstall the LaunchAgent
+	if err := daemon.Uninstall(resolved.Workspace); err != nil {
+		finishPayload := map[string]any{
+			"workspace": resolved.Workspace.Root,
+			"error":     err.Error(),
+		}
+		_ = logger.LogEvent("cli", "daemon_uninstall_finished", finishPayload)
+		return err
+	}
+
+	finishPayload := map[string]any{
+		"workspace": resolved.Workspace.Root,
+	}
+	_ = logger.LogEvent("cli", "daemon_uninstall_finished", finishPayload)
+
+	fmt.Fprintf(os.Stdout, "Uninstalled LaunchAgent for workspace: %s\n", resolved.Workspace.Root)
+	return nil
+}
+
+func runDaemonStart(args []string, workspacePath string) error {
+	fs := flag.NewFlagSet("daemon start", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	resolved, err := resolveWorkspaceAndOverrides(workspacePath, workspaceOverrides{})
+	if err != nil {
+		return err
+	}
+
+	logger := audit.NewLogger(resolved.AuditDB)
+	startPayload := map[string]any{
+		"workspace": resolved.Workspace.Root,
+	}
+	if err := logger.LogEvent("cli", "daemon_start_started", startPayload); err != nil {
+		fmt.Fprintln(os.Stderr, "audit log failed:", err)
+	}
+
+	// Start the LaunchAgent
+	if err := daemon.Start(resolved.Workspace); err != nil {
+		finishPayload := map[string]any{
+			"workspace": resolved.Workspace.Root,
+			"error":     err.Error(),
+		}
+		_ = logger.LogEvent("cli", "daemon_start_finished", finishPayload)
+		return err
+	}
+
+	finishPayload := map[string]any{
+		"workspace": resolved.Workspace.Root,
+	}
+	_ = logger.LogEvent("cli", "daemon_start_finished", finishPayload)
+
+	fmt.Fprintf(os.Stdout, "Started daemon for workspace: %s\n", resolved.Workspace.Root)
+	fmt.Fprintf(os.Stdout, "View logs: %s daemon logs --workspace %s\n", appName, resolved.Workspace.Root)
+	return nil
+}
+
+func runDaemonStop(args []string, workspacePath string) error {
+	fs := flag.NewFlagSet("daemon stop", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	resolved, err := resolveWorkspaceAndOverrides(workspacePath, workspaceOverrides{})
+	if err != nil {
+		return err
+	}
+
+	logger := audit.NewLogger(resolved.AuditDB)
+	startPayload := map[string]any{
+		"workspace": resolved.Workspace.Root,
+	}
+	if err := logger.LogEvent("cli", "daemon_stop_started", startPayload); err != nil {
+		fmt.Fprintln(os.Stderr, "audit log failed:", err)
+	}
+
+	// Stop the LaunchAgent
+	if err := daemon.Stop(resolved.Workspace); err != nil {
+		finishPayload := map[string]any{
+			"workspace": resolved.Workspace.Root,
+			"error":     err.Error(),
+		}
+		_ = logger.LogEvent("cli", "daemon_stop_finished", finishPayload)
+		return err
+	}
+
+	finishPayload := map[string]any{
+		"workspace": resolved.Workspace.Root,
+	}
+	_ = logger.LogEvent("cli", "daemon_stop_finished", finishPayload)
+
+	fmt.Fprintf(os.Stdout, "Stopped daemon for workspace: %s\n", resolved.Workspace.Root)
+	return nil
+}
+
+func runDaemonLogs(args []string, workspacePath string) error {
+	fs := flag.NewFlagSet("daemon logs", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	lines := fs.Int("lines", 200, "Number of lines to show")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	resolved, err := resolveWorkspaceAndOverrides(workspacePath, workspaceOverrides{})
+	if err != nil {
+		return err
+	}
+
+	logPath := daemon.GetLogPath(resolved.Workspace)
+
+	// Check if log file exists
+	if _, err := os.Stat(logPath); os.IsNotExist(err) {
+		fmt.Fprintf(os.Stdout, "No log file found: %s\n", logPath)
+		fmt.Fprintf(os.Stdout, "Start the daemon with: %s daemon start --workspace %s\n", appName, resolved.Workspace.Root)
+		return nil
+	}
+
+	// Use tail command to show last N lines
+	cmd := exec.Command("tail", "-n", fmt.Sprintf("%d", *lines), logPath)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("tail logs: %w", err)
 	}
 
 	return nil

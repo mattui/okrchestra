@@ -17,6 +17,7 @@ type Workspace struct {
 	AuditDir     string
 	AuditDBPath  string
 	StateDBPath  string
+	LogDir       string
 }
 
 // Resolve expands and validates the workspace root, ensuring it exists.
@@ -48,6 +49,7 @@ func (w *Workspace) EnsureDirs() error {
 	dirs := []string{
 		w.ArtifactsDir,
 		w.AuditDir,
+		w.LogDir,
 		filepath.Join(w.MetricsDir, "snapshots"),
 		filepath.Join(w.ArtifactsDir, "plans"),
 		filepath.Join(w.ArtifactsDir, "runs"),
@@ -89,6 +91,7 @@ func newWorkspace(root string) *Workspace {
 		AuditDir:     filepath.Join(root, "audit"),
 		AuditDBPath:  filepath.Join(root, "audit", "audit.sqlite"),
 		StateDBPath:  filepath.Join(root, "audit", "daemon.sqlite"),
+		LogDir:       filepath.Join(root, "audit", "logs"),
 	}
 }
 
