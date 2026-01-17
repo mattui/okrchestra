@@ -11,6 +11,11 @@ bin/
 *.out
 *.test
 
+# Runtime artifacts
+/artifacts/
+/audit/*.db
+/metrics/snapshots/*.json
+
 # IDE/editor
 .vscode/
 .idea/

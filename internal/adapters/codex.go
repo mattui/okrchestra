@@ -24,6 +24,9 @@ func (a *CodexAdapter) Run(ctx context.Context, cfg RunConfig) (*RunResult, erro
 	if cfg.ArtifactsDir == "" {
 		return nil, errors.New("artifacts dir is required")
 	}
+	if cfg.PromptPath == "" {
+		return nil, errors.New("prompt path is required")
+	}
 
 	workDir, err := filepath.Abs(cfg.WorkDir)
 	if err != nil {
@@ -45,6 +48,17 @@ func (a *CodexAdapter) Run(ctx context.Context, cfg RunConfig) (*RunResult, erro
 		return nil, fmt.Errorf("create artifacts dir: %w", err)
 	}
 
+	if cfg.Env == nil {
+		cfg.Env = map[string]string{}
+	}
+	if cfg.Env["CODEX_HOME"] == "" {
+		codexHome := filepath.Join(artifactsDir, "codex_home")
+		if err := os.MkdirAll(codexHome, 0o755); err != nil {
+			return nil, fmt.Errorf("create CODEX_HOME: %w", err)
+		}
+		cfg.Env["CODEX_HOME"] = codexHome
+	}
+
 	transcriptPath := filepath.Join(artifactsDir, "transcript.log")
 	transcriptFile, err := os.OpenFile(transcriptPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
@@ -54,6 +68,17 @@ func (a *CodexAdapter) Run(ctx context.Context, cfg RunConfig) (*RunResult, erro
 		_ = transcriptFile.Close()
 	}()
 
+	resultPath := filepath.Join(artifactsDir, "result.json")
+	if cfg.Env != nil {
+		if override, ok := cfg.Env["OKRCHESTRA_AGENT_RESULT"]; ok && override != "" {
+			resultPath = override
+		}
+	}
+	schemaPath := filepath.Join(artifactsDir, "result.schema.json")
+	if err := os.WriteFile(schemaPath, []byte(defaultResultSchema), 0o644); err != nil {
+		return nil, fmt.Errorf("write result schema: %w", err)
+	}
+
 	runCtx := ctx
 	var cancel context.CancelFunc
 	if cfg.Timeout > 0 {
@@ -61,9 +86,14 @@ func (a *CodexAdapter) Run(ctx context.Context, cfg RunConfig) (*RunResult, erro
 		defer cancel()
 	}
 
-	args := []string{}
-	if cfg.PromptPath != "" {
-		args = append(args, "--prompt-file", cfg.PromptPath)
+	args := []string{
+		"-a", "never",
+		"-s", "workspace-write",
+		"exec",
+		"-C", workDir,
+		"--output-schema", schemaPath,
+		"--output-last-message", resultPath,
+		"-",
 	}
 
 	cmd := exec.CommandContext(runCtx, "codex", args...)
@@ -72,11 +102,20 @@ func (a *CodexAdapter) Run(ctx context.Context, cfg RunConfig) (*RunResult, erro
 	cmd.Stderr = io.MultiWriter(transcriptFile)
 	cmd.Env = mergeEnv(os.Environ(), cfg.Env)
 
+	promptFile, err := os.Open(cfg.PromptPath)
+	if err != nil {
+		return nil, fmt.Errorf("open prompt: %w", err)
+	}
+	defer func() {
+		_ = promptFile.Close()
+	}()
+	cmd.Stdin = promptFile
+
 	result := &RunResult{
 		ExitCode:       0,
 		TranscriptPath: transcriptPath,
 		ArtifactsDir:   artifactsDir,
-		SummaryPath:    "",
+		SummaryPath:    resultPath,
 	}
 
 	if err := cmd.Run(); err != nil {
@@ -86,6 +125,19 @@ func (a *CodexAdapter) Run(ctx context.Context, cfg RunConfig) (*RunResult, erro
 
 	return result, nil
 }
+
+const defaultResultSchema = `{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["summary", "proposed_changes", "kr_impact_claim"],
+  "properties": {
+    "summary": { "type": "string" },
+    "proposed_changes": { "type": "array", "items": { "type": "string" } },
+    "kr_impact_claim": { "type": "string" }
+  }
+}
+`
 
 func mergeEnv(base []string, overrides map[string]string) []string {
 	if len(overrides) == 0 {

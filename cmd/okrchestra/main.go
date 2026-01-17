@@ -14,6 +14,7 @@ import (
 	"okrchestra/internal/audit"
 	"okrchestra/internal/metrics"
 	"okrchestra/internal/okrstore"
+	"okrchestra/internal/planner"
 )
 
 const appName = "okrchestra"
@@ -57,7 +58,10 @@ func main() {
 			os.Exit(1)
 		}
 	case "plan":
-		fmt.Fprintf(os.Stdout, "%s %s: stub command\n", appName, args[0])
+		if err := runPlan(args[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n\n", args[0])
 		flag.Usage()
@@ -120,6 +124,8 @@ func runAgentRun(args []string) error {
 	switch *adapterName {
 	case "codex":
 		adapter = &adapters.CodexAdapter{}
+	case "mock":
+		adapter = &adapters.MockAdapter{}
 	default:
 		return fmt.Errorf("unknown adapter: %s", *adapterName)
 	}
@@ -186,6 +192,173 @@ func runKR(args []string) error {
 	default:
 		return fmt.Errorf("%s kr: unknown subcommand %q", appName, args[0])
 	}
+}
+
+func runPlan(args []string) error {
+	if len(args) == 0 || args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
+		return fmt.Errorf("%s plan: missing subcommand", appName)
+	}
+
+	switch args[0] {
+	case "generate":
+		return runPlanGenerate(args[1:])
+	case "run":
+		return runPlanRun(args[1:])
+	default:
+		return fmt.Errorf("%s plan: unknown subcommand %q", appName, args[0])
+	}
+}
+
+func runPlanGenerate(args []string) error {
+	fs := flag.NewFlagSet("plan generate", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	okrsDir := fs.String("okrs-dir", "okrs", "Path to OKR YAML directory")
+	outDir := fs.String("out-dir", filepath.Join("artifacts", "plans"), "Base directory to write plans")
+	asOfStr := fs.String("as-of", "", "As-of date (YYYY-MM-DD, default: today UTC)")
+	objectiveID := fs.String("objective-id", "", "Optional objective_id to target")
+	krID := fs.String("kr-id", "", "Optional kr_id to target")
+	agentRole := fs.String("agent-role", "software_engineer", "Agent role for generated items")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	asOf := time.Now().UTC().Truncate(24 * time.Hour)
+	if *asOfStr != "" {
+		parsed, err := time.ParseInLocation("2006-01-02", *asOfStr, time.UTC)
+		if err != nil {
+			return fmt.Errorf("parse --as-of: %w", err)
+		}
+		asOf = parsed.UTC().Truncate(24 * time.Hour)
+	}
+
+	startPayload := map[string]any{
+		"okrs_dir":     *okrsDir,
+		"out_dir":      *outDir,
+		"as_of":        asOf.Format("2006-01-02"),
+		"objective_id": *objectiveID,
+		"kr_id":        *krID,
+		"agent_role":   *agentRole,
+		"command":      "plan generate",
+	}
+	if err := audit.LogEvent("cli", "plan_generate_started", startPayload); err != nil {
+		fmt.Fprintln(os.Stderr, "audit log failed:", err)
+	}
+
+	res, err := planner.GeneratePlan(planner.GenerateOptions{
+		OKRsDir:       *okrsDir,
+		OutputBaseDir: *outDir,
+		AsOf:          asOf,
+		ObjectiveID:   *objectiveID,
+		KRID:          *krID,
+		AgentRole:     *agentRole,
+	})
+
+	finishPayload := map[string]any{
+		"okrs_dir": *okrsDir,
+		"out_dir":  *outDir,
+	}
+	if err != nil {
+		finishPayload["error"] = err.Error()
+		_ = audit.LogEvent("cli", "plan_generate_finished", finishPayload)
+		return err
+	}
+
+	finishPayload["plan_path"] = res.PlanPath
+	finishPayload["plan_id"] = res.Plan.ID
+	_ = audit.LogEvent("cli", "plan_generate_finished", finishPayload)
+
+	fmt.Fprintf(os.Stdout, "Wrote plan: %s\n", res.PlanPath)
+	return nil
+}
+
+func runPlanRun(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("plan path is required")
+	}
+
+	planArg := ""
+	remaining := args
+	if len(remaining) > 0 && !strings.HasPrefix(remaining[0], "-") {
+		planArg = remaining[0]
+		remaining = remaining[1:]
+	}
+
+	fs := flag.NewFlagSet("plan run", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	adapterName := fs.String("adapter", "codex", "Adapter name")
+	workDir := fs.String("workdir", ".", "Working directory")
+	timeout := fs.Duration("timeout", 0, "Optional per-item timeout (e.g. 10m)")
+	if err := fs.Parse(remaining); err != nil {
+		return err
+	}
+	if planArg == "" {
+		rest := fs.Args()
+		if len(rest) == 0 {
+			return fmt.Errorf("plan path is required")
+		}
+		planArg = rest[0]
+	}
+
+	absPlan, err := filepath.Abs(planArg)
+	if err != nil {
+		return fmt.Errorf("resolve plan path: %w", err)
+	}
+	absWorkDir, err := filepath.Abs(*workDir)
+	if err != nil {
+		return fmt.Errorf("resolve workdir: %w", err)
+	}
+
+	var adapter adapters.AgentAdapter
+	switch *adapterName {
+	case "codex":
+		adapter = &adapters.CodexAdapter{}
+	case "mock":
+		adapter = &adapters.MockAdapter{}
+	default:
+		return fmt.Errorf("unknown adapter: %s", *adapterName)
+	}
+
+	startPayload := map[string]any{
+		"plan":    absPlan,
+		"adapter": adapter.Name(),
+		"workdir": absWorkDir,
+		"timeout": timeout.String(),
+	}
+	if err := audit.LogEvent("cli", "plan_run_started", startPayload); err != nil {
+		fmt.Fprintln(os.Stderr, "audit log failed:", err)
+	}
+
+	ctx := context.Background()
+	res, runErr := planner.RunPlan(ctx, planner.RunOptions{
+		PlanPath: absPlan,
+		WorkDir:  absWorkDir,
+		Adapter:  adapter,
+		Timeout:  *timeout,
+	})
+
+	finishPayload := map[string]any{
+		"plan":    absPlan,
+		"adapter": adapter.Name(),
+		"workdir": absWorkDir,
+	}
+	if res != nil {
+		finishPayload["run_id"] = res.RunID
+		finishPayload["run_dir"] = res.RunDir
+		finishPayload["items_run"] = len(res.ItemRuns)
+	}
+	if runErr != nil {
+		finishPayload["error"] = runErr.Error()
+	}
+	if err := audit.LogEvent("cli", "plan_run_finished", finishPayload); err != nil {
+		fmt.Fprintln(os.Stderr, "audit log failed:", err)
+	}
+
+	if runErr != nil {
+		return runErr
+	}
+	fmt.Fprintf(os.Stdout, "Plan run complete: %s\n", res.RunDir)
+	return nil
 }
 
 func runOKRPropose(args []string) error {
