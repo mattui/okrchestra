@@ -12,6 +12,7 @@ import (
 
 	"okrchestra/internal/adapters"
 	"okrchestra/internal/audit"
+	"okrchestra/internal/daemon"
 	"okrchestra/internal/metrics"
 	"okrchestra/internal/okrstore"
 	"okrchestra/internal/planner"
@@ -27,6 +28,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Usage:\n  %s [command] [flags]\n\n", appName)
 		fmt.Fprintln(os.Stderr, "Commands:")
 		fmt.Fprintln(os.Stderr, "  agent   Manage agents")
+		fmt.Fprintln(os.Stderr, "  daemon  Manage daemon")
 		fmt.Fprintln(os.Stderr, "  init    Initialize a new workspace")
 		fmt.Fprintln(os.Stderr, "  okr     Manage OKRs")
 		fmt.Fprintln(os.Stderr, "  kr      Manage key results")
@@ -51,6 +53,11 @@ func main() {
 	switch args[0] {
 	case "agent":
 		if err := runAgent(args[1:], workspacePath); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	case "daemon":
+		if err := runDaemon(args[1:], workspacePath); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -1141,3 +1148,183 @@ const minimalCIReportTemplate = `{
   }
 }
 `
+
+func runDaemon(args []string, workspacePath string) error {
+	if len(args) == 0 || args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
+		return fmt.Errorf("%s daemon: missing subcommand", appName)
+	}
+
+	switch args[0] {
+	case "run":
+		return runDaemonRun(args[1:], workspacePath)
+	case "status":
+		return runDaemonStatus(args[1:], workspacePath)
+	case "enqueue":
+		return runDaemonEnqueue(args[1:], workspacePath)
+	default:
+		return fmt.Errorf("%s daemon: unknown subcommand %q", appName, args[0])
+	}
+}
+
+func runDaemonRun(args []string, workspacePath string) error {
+	fs := flag.NewFlagSet("daemon run", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	pollInterval := fs.Duration("poll", 1*time.Second, "Poll interval for checking jobs")
+	leaseDuration := fs.Duration("lease", 30*time.Second, "Lease duration for claimed jobs")
+	tz := fs.String("tz", "America/Chicago", "Timezone for scheduling")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	resolved, err := resolveWorkspaceAndOverrides(workspacePath, workspaceOverrides{})
+	if err != nil {
+		return err
+	}
+	if err := resolved.Workspace.EnsureDirs(); err != nil {
+		return err
+	}
+
+	cfg := daemon.Config{
+		Workspace:    resolved.Workspace,
+		StorePath:    resolved.Workspace.StateDBPath,
+		TimeZone:     *tz,
+		PollInterval: *pollInterval,
+		LeaseFor:     *leaseDuration,
+	}
+
+	d, err := daemon.New(cfg)
+	if err != nil {
+		return fmt.Errorf("create daemon: %w", err)
+	}
+	defer d.Close()
+
+	fmt.Fprintf(os.Stdout, "Starting daemon for workspace: %s\n", resolved.Workspace.Root)
+	fmt.Fprintf(os.Stdout, "Poll interval: %s, Lease: %s\n", *pollInterval, *leaseDuration)
+
+	ctx := context.Background()
+	return d.Run(ctx)
+}
+
+func runDaemonStatus(args []string, workspacePath string) error {
+	fs := flag.NewFlagSet("daemon status", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	resolved, err := resolveWorkspaceAndOverrides(workspacePath, workspaceOverrides{})
+	if err != nil {
+		return err
+	}
+
+	store, err := daemon.Open(resolved.Workspace.StateDBPath)
+	if err != nil {
+		return fmt.Errorf("open daemon store: %w", err)
+	}
+	defer store.Close()
+
+	// Show running jobs
+	running, err := store.ListRunning()
+	if err != nil {
+		return fmt.Errorf("list running jobs: %w", err)
+	}
+
+	fmt.Fprintf(os.Stdout, "Running jobs: %d\n", len(running))
+	for _, job := range running {
+		fmt.Fprintf(os.Stdout, "  %s [%s] started=%s lease_expires=%s\n",
+			job.ID, job.Type, job.StartedAt.Format(time.RFC3339), job.LeaseExpiresAt.Format(time.RFC3339))
+	}
+	fmt.Fprintln(os.Stdout)
+
+	// Show queued jobs (next 10)
+	queued, err := store.ListQueued(10)
+	if err != nil {
+		return fmt.Errorf("list queued jobs: %w", err)
+	}
+
+	fmt.Fprintf(os.Stdout, "Queued jobs (next %d):\n", len(queued))
+	for _, job := range queued {
+		fmt.Fprintf(os.Stdout, "  %s [%s] scheduled=%s\n",
+			job.ID, job.Type, job.ScheduledAt.Format(time.RFC3339))
+	}
+	fmt.Fprintln(os.Stdout)
+
+	// Show recent completed jobs
+	completed, err := store.ListRecentCompleted(5)
+	if err != nil {
+		return fmt.Errorf("list completed jobs: %w", err)
+	}
+
+	fmt.Fprintf(os.Stdout, "Recent completed jobs (last %d):\n", len(completed))
+	for _, job := range completed {
+		var finishedStr string
+		if job.FinishedAt != nil {
+			finishedStr = job.FinishedAt.Format(time.RFC3339)
+		}
+		fmt.Fprintf(os.Stdout, "  %s [%s] status=%s finished=%s\n",
+			job.ID, job.Type, job.Status, finishedStr)
+		if job.ResultJSON != "" {
+			fmt.Fprintf(os.Stdout, "    result: %s\n", job.ResultJSON)
+		}
+	}
+
+	return nil
+}
+
+func runDaemonEnqueue(args []string, workspacePath string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("job type is required")
+	}
+
+	jobType := args[0]
+	remaining := args[1:]
+
+	fs := flag.NewFlagSet("daemon enqueue", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	atStr := fs.String("at", "", "Scheduled time (YYYY-MM-DDTHH:MM format)")
+	payloadJSON := fs.String("payload-json", "{}", "Job payload as JSON")
+
+	if err := fs.Parse(remaining); err != nil {
+		return err
+	}
+
+	if *atStr == "" {
+		return fmt.Errorf("--at is required")
+	}
+
+	scheduledAt, err := time.Parse("2006-01-02T15:04", *atStr)
+	if err != nil {
+		return fmt.Errorf("parse --at: %w", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(*payloadJSON), &payload); err != nil {
+		return fmt.Errorf("parse --payload-json: %w", err)
+	}
+
+	resolved, err := resolveWorkspaceAndOverrides(workspacePath, workspaceOverrides{})
+	if err != nil {
+		return err
+	}
+
+	store, err := daemon.Open(resolved.Workspace.StateDBPath)
+	if err != nil {
+		return fmt.Errorf("open daemon store: %w", err)
+	}
+	defer store.Close()
+
+	jobID, created, err := store.EnqueueUnique(jobType, scheduledAt, payload)
+	if err != nil {
+		return fmt.Errorf("enqueue job: %w", err)
+	}
+
+	if created {
+		fmt.Fprintf(os.Stdout, "Enqueued job: %s\n", jobID)
+	} else {
+		fmt.Fprintf(os.Stdout, "Job already exists: %s\n", jobID)
+	}
+
+	return nil
+}
