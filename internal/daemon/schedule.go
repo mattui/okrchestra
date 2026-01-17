@@ -62,6 +62,11 @@ func (s *Scheduler) Tick(now time.Time) error {
 		return fmt.Errorf("schedule plan_execute: %w", err)
 	}
 
+	// Schedule watch_tick every 30 seconds
+	if err := s.scheduleWatchTicks(lastWatermark, now); err != nil {
+		return fmt.Errorf("schedule watch_tick: %w", err)
+	}
+
 	// Update watermark
 	if err := s.store.SetKV("scheduler_watermark", now.UTC().Format(time.RFC3339)); err != nil {
 		return fmt.Errorf("update watermark: %w", err)

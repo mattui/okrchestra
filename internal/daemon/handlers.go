@@ -22,6 +22,7 @@ func DefaultHandlers() map[string]HandlerFunc {
 		"kr_measure":    handleKRMeasure,
 		"plan_generate": handlePlanGenerate,
 		"plan_execute":  handlePlanExecute,
+		"watch_tick":    handleWatchTick,
 	}
 }
 

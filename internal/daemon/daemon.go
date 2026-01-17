@@ -171,7 +171,9 @@ func (d *Daemon) claimAndExecute(ctx context.Context) error {
 		return err
 	}
 
-	result, execErr := handler(ctx, d.Workspace, job)
+	// Add store to context for handlers that need it (e.g. watch_tick)
+	ctxWithStore := context.WithValue(ctx, "daemon_store", d.Store)
+	result, execErr := handler(ctxWithStore, d.Workspace, job)
 
 	if execErr != nil {
 		_ = d.Store.Fail(job.ID, execErr)
