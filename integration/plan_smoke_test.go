@@ -45,7 +45,7 @@ func TestPlanSmoke(t *testing.T) {
 		t.Fatalf("okrchestra plan run exit code %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
 	}
 
-	runsDir := filepath.Join(plansDir, testAsOf, "runs")
+	runsDir := filepath.Join(workspace, "artifacts", "runs")
 	entries, err := os.ReadDir(runsDir)
 	if err != nil {
 		t.Fatalf("read runs dir: %v", err)
@@ -80,5 +80,25 @@ func TestPlanSmoke(t *testing.T) {
 	}
 	if itemCount == 0 {
 		t.Fatalf("no item results found in %s", planRunDir)
+	}
+
+	auditPath := filepath.Join(workspace, "audit", "audit.sqlite")
+	if _, err := os.Stat(auditPath); err != nil {
+		t.Fatalf("audit db not written at %s: %v", auditPath, err)
+	}
+	requireAuditEvents(t, auditPath, []string{
+		"plan_generate_started",
+		"plan_generate_finished",
+		"plan_run_started",
+		"plan_run_finished",
+		"plan_item_started",
+		"plan_item_finished",
+	})
+
+	enginePlan := filepath.Join(harness.RepoRoot(t), "artifacts", "plans", testAsOf, "plan.json")
+	if _, err := os.Stat(enginePlan); err == nil {
+		t.Fatalf("engine repo plan should not exist at %s", enginePlan)
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat engine plan: %v", err)
 	}
 }

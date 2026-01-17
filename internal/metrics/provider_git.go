@@ -30,6 +30,9 @@ func (p *GitProvider) Collect(ctx context.Context) ([]MetricPoint, error) {
 		"HEAD",
 	})
 	if err != nil {
+		if isRepoMissing(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	mergeCommits, err := gitCount(ctx, p.RepoDir, []string{
@@ -41,6 +44,9 @@ func (p *GitProvider) Collect(ctx context.Context) ([]MetricPoint, error) {
 		"HEAD",
 	})
 	if err != nil {
+		if isRepoMissing(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 
@@ -86,4 +92,12 @@ func gitCount(ctx context.Context, dir string, args []string) (int64, error) {
 		return 0, fmt.Errorf("parse git output %q: %w", raw, err)
 	}
 	return v, nil
+}
+
+func isRepoMissing(err error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "not a git repository") || strings.Contains(lower, "bad revision") || strings.Contains(lower, "ambiguous argument 'head'") || strings.Contains(lower, "fatal: not a git")
 }

@@ -16,10 +16,12 @@ import (
 )
 
 type RunOptions struct {
-	PlanPath string
-	WorkDir  string
-	Adapter  adapters.AgentAdapter
-	Timeout  time.Duration
+	PlanPath    string
+	WorkDir     string
+	Adapter     adapters.AgentAdapter
+	Timeout     time.Duration
+	AuditLogger *audit.Logger
+	RunBaseDir  string
 
 	FollowTranscripts bool
 	FollowLines       int
@@ -45,6 +47,15 @@ func RunPlan(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	if opts.Adapter == nil {
 		return nil, fmt.Errorf("adapter is required")
 	}
+	logEvent := func(actor string, eventType string, payload any) {
+		if opts.AuditLogger != nil {
+			if err := opts.AuditLogger.LogEvent(actor, eventType, payload); err != nil {
+				return
+			}
+			return
+		}
+		_ = audit.LogEvent(actor, eventType, payload)
+	}
 	planPath, err := ResolvePlanPath(opts.PlanPath)
 	if err != nil {
 		return nil, err
@@ -53,10 +64,14 @@ func RunPlan(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	planDir := filepath.Dir(planPath)
 
 	runID := time.Now().UTC().Format("20060102T150405Z")
-	runDir := filepath.Join(planDir, "runs", runID)
+	runBase := opts.RunBaseDir
+	if runBase == "" {
+		planDir := filepath.Dir(planPath)
+		runBase = filepath.Join(planDir, "runs")
+	}
+	runDir := filepath.Join(runBase, runID)
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		return nil, fmt.Errorf("ensure run dir: %w", err)
 	}
@@ -93,9 +108,7 @@ func RunPlan(ctx context.Context, opts RunOptions) (*RunResult, error) {
 			"workdir":      opts.WorkDir,
 			"item_dir":     itemDir,
 		}
-		if err := audit.LogEvent("scheduler", "plan_item_started", startPayload); err != nil {
-			// Best-effort logging; do not fail runs due to audit issues.
-		}
+		logEvent("scheduler", "plan_item_started", startPayload)
 
 		promptPath := filepath.Join(itemDir, "prompt.md")
 		if err := os.WriteFile(promptPath, []byte(renderPrompt(item, itemDir)), 0o644); err != nil {
@@ -149,7 +162,7 @@ func RunPlan(ctx context.Context, opts RunOptions) (*RunResult, error) {
 			} else {
 				finishPayload["error"] = runErr.Error()
 				finishPayload["result_error"] = validateErr.Error()
-				_ = audit.LogEvent("scheduler", "plan_item_finished", finishPayload)
+				logEvent("scheduler", "plan_item_finished", finishPayload)
 				if adapterResult != nil && adapterResult.TranscriptPath != "" {
 					return result, fmt.Errorf("agent run failed for item %s (see %s): %w", item.ID, adapterResult.TranscriptPath, runErr)
 				}
@@ -158,12 +171,12 @@ func RunPlan(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		}
 		if validateErr != nil {
 			finishPayload["error"] = validateErr.Error()
-			_ = audit.LogEvent("scheduler", "plan_item_finished", finishPayload)
+			logEvent("scheduler", "plan_item_finished", finishPayload)
 			return result, fmt.Errorf("agent result invalid for item %s: %w", item.ID, validateErr)
 		}
 
 		finishPayload["result_json"] = resultPath
-		_ = audit.LogEvent("scheduler", "plan_item_finished", finishPayload)
+		logEvent("scheduler", "plan_item_finished", finishPayload)
 
 		result.ItemRuns = append(result.ItemRuns, ItemRunResult{
 			ItemID:     item.ID,
