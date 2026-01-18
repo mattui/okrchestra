@@ -163,7 +163,7 @@ func handlePlanExecute(ctx context.Context, ws *workspace.Workspace, job *Job) (
 	}
 
 	// Defaults
-	adapterName := "mock"
+	adapterName := "codex"
 	if payload.Adapter != "" {
 		adapterName = payload.Adapter
 	}
