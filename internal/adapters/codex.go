@@ -95,8 +95,7 @@ func (a *CodexAdapter) Run(ctx context.Context, cfg RunConfig) (*RunResult, erro
 	}
 
 	args := []string{
-		"-a", "never",
-		"-s", "workspace-write",
+		"--full-auto",
 		"exec",
 		"-C", workDir,
 		"--output-schema", schemaPath,

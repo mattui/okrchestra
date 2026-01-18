@@ -44,6 +44,13 @@ func GeneratePlist(ws *workspace.Workspace, binaryPath string) (string, error) {
 		return "", fmt.Errorf("resolve binary path: %w", err)
 	}
 
+	// Get home directory for constructing ~/go/bin path
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("get home dir: %w", err)
+	}
+	goBinPath := filepath.Join(homeDir, "go", "bin")
+
 	label := PlistLabel(ws.Root)
 	logPath := filepath.Join(ws.LogDir, "okrchestra.log")
 
@@ -64,7 +71,7 @@ func GeneratePlist(ws *workspace.Workspace, binaryPath string) (string, error) {
 	<key>EnvironmentVariables</key>
 	<dict>
 		<key>PATH</key>
-		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<string>%s:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
 	</dict>
 	<key>StandardOutPath</key>
 	<string>%s</string>
@@ -76,7 +83,7 @@ func GeneratePlist(ws *workspace.Workspace, binaryPath string) (string, error) {
 	<true/>
 </dict>
 </plist>
-`, label, absBinaryPath, ws.Root, logPath, logPath)
+`, label, absBinaryPath, ws.Root, goBinPath, logPath, logPath)
 
 	return plist, nil
 }
