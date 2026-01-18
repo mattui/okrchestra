@@ -1183,6 +1183,7 @@ func runDaemonRun(args []string, workspacePath string) error {
 	pollInterval := fs.Duration("poll", 1*time.Second, "Poll interval for checking jobs")
 	leaseDuration := fs.Duration("lease", 30*time.Second, "Lease duration for claimed jobs")
 	tz := fs.String("tz", "America/Chicago", "Timezone for scheduling")
+	notifications := fs.Bool("notifications", true, "Enable macOS notifications for plan completion")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -1197,11 +1198,12 @@ func runDaemonRun(args []string, workspacePath string) error {
 	}
 
 	cfg := daemon.Config{
-		Workspace:    resolved.Workspace,
-		StorePath:    resolved.Workspace.StateDBPath,
-		TimeZone:     *tz,
-		PollInterval: *pollInterval,
-		LeaseFor:     *leaseDuration,
+		Workspace:     resolved.Workspace,
+		StorePath:     resolved.Workspace.StateDBPath,
+		TimeZone:      *tz,
+		PollInterval:  *pollInterval,
+		LeaseFor:      *leaseDuration,
+		Notifications: *notifications,
 	}
 
 	d, err := daemon.New(cfg)

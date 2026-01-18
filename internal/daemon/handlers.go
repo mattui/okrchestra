@@ -12,6 +12,7 @@ import (
 
 	"okrchestra/internal/adapters"
 	"okrchestra/internal/metrics"
+	"okrchestra/internal/notify"
 	"okrchestra/internal/planner"
 	"okrchestra/internal/workspace"
 )
@@ -225,6 +226,26 @@ func handlePlanExecute(ctx context.Context, ws *workspace.Workspace, job *Job) (
 
 	itemsSucceeded := len(runResult.ItemRuns)
 	itemsFailed := len(runResult.Plan.Items) - itemsSucceeded
+
+	// Send notification if notifier is available in context
+	if notifier, ok := ctx.Value("daemon_notifier").(*notify.Notifier); ok && notifier != nil {
+		// Get KR ID from first plan item (if available)
+		krID := "Plan"
+		if len(runResult.Plan.Items) > 0 {
+			krID = runResult.Plan.Items[0].KRID
+		}
+		
+		title, message := notify.FormatPlanComplete(
+			runResult.Plan.ID,
+			len(runResult.Plan.Items),
+			itemsSucceeded,
+			itemsFailed,
+			krID,
+		)
+		
+		// Send notification (ignore errors - notifications are best-effort)
+		_ = notifier.Send(title, message)
+	}
 
 	return map[string]any{
 		"run_id":          runResult.RunID,

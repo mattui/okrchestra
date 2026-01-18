@@ -1,0 +1,57 @@
+package notify
+
+import (
+	"fmt"
+	"os/exec"
+	"runtime"
+	"strings"
+)
+
+// Notifier sends system notifications.
+type Notifier struct {
+	Enabled bool
+}
+
+// Send sends a system notification.
+// On macOS, uses osascript to display notifications.
+// On other platforms, this is a no-op.
+func (n *Notifier) Send(title, message string) error {
+	if !n.Enabled {
+		return nil
+	}
+
+	if runtime.GOOS != "darwin" {
+		// Only macOS supported for now
+		return nil
+	}
+
+	return sendMacOSNotification(title, message)
+}
+
+// sendMacOSNotification uses osascript to display a notification.
+func sendMacOSNotification(title, message string) error {
+	// Escape quotes in title and message
+	title = strings.ReplaceAll(title, `"`, `\"`)
+	message = strings.ReplaceAll(message, `"`, `\"`)
+
+	script := fmt.Sprintf(`display notification "%s" with title "%s"`, message, title)
+	cmd := exec.Command("osascript", "-e", script)
+	
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("send notification: %w", err)
+	}
+	
+	return nil
+}
+
+// FormatPlanComplete formats a plan completion notification message.
+func FormatPlanComplete(planID string, itemsTotal, itemsSucceeded, itemsFailed int, krID string) (title, message string) {
+	if itemsFailed > 0 {
+		title = "⚠️ OKRchestra Plan Failed"
+		message = fmt.Sprintf("%s: %d/%d items failed", krID, itemsFailed, itemsTotal)
+	} else {
+		title = "✅ OKRchestra Plan Complete"
+		message = fmt.Sprintf("%s: %d/%d items succeeded", krID, itemsSucceeded, itemsTotal)
+	}
+	return title, message
+}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"okrchestra/internal/audit"
+	"okrchestra/internal/notify"
 	"okrchestra/internal/workspace"
 )
 
@@ -22,6 +23,7 @@ type Daemon struct {
 	Scheduler    *Scheduler
 	Handlers     map[string]HandlerFunc
 	AuditLogger  *audit.Logger
+	Notifier     *notify.Notifier
 	LeaseOwner   string
 	LeaseFor     time.Duration
 	PollInterval time.Duration
@@ -29,12 +31,13 @@ type Daemon struct {
 
 // Config holds daemon configuration.
 type Config struct {
-	Workspace    *workspace.Workspace
-	StorePath    string
-	TimeZone     string
-	LeaseOwner   string
-	LeaseFor     time.Duration
-	PollInterval time.Duration
+	Workspace      *workspace.Workspace
+	StorePath      string
+	TimeZone       string
+	LeaseOwner     string
+	LeaseFor       time.Duration
+	PollInterval   time.Duration
+	Notifications  bool
 }
 
 // New creates a new daemon with default handlers.
@@ -69,6 +72,7 @@ func New(cfg Config) (*Daemon, error) {
 		Scheduler:    scheduler,
 		Handlers:     DefaultHandlers(),
 		AuditLogger:  audit.NewLogger(cfg.Workspace.AuditDBPath),
+		Notifier:     &notify.Notifier{Enabled: cfg.Notifications},
 		LeaseOwner:   cfg.LeaseOwner,
 		LeaseFor:     cfg.LeaseFor,
 		PollInterval: cfg.PollInterval,
@@ -171,9 +175,10 @@ func (d *Daemon) claimAndExecute(ctx context.Context) error {
 		return err
 	}
 
-	// Add store to context for handlers that need it (e.g. watch_tick)
+	// Add store and notifier to context for handlers that need them
 	ctxWithStore := context.WithValue(ctx, "daemon_store", d.Store)
-	result, execErr := handler(ctxWithStore, d.Workspace, job)
+	ctxWithNotifier := context.WithValue(ctxWithStore, "daemon_notifier", d.Notifier)
+	result, execErr := handler(ctxWithNotifier, d.Workspace, job)
 
 	if execErr != nil {
 		_ = d.Store.Fail(job.ID, execErr)
