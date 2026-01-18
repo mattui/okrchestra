@@ -61,6 +61,11 @@ func GeneratePlist(ws *workspace.Workspace, binaryPath string) (string, error) {
 		<string>--workspace</string>
 		<string>%s</string>
 	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
 	<key>StandardOutPath</key>
 	<string>%s</string>
 	<key>StandardErrorPath</key>

@@ -19,6 +19,30 @@ func (a *CodexAdapter) Name() string {
 	return "codex"
 }
 
+// findCodexBinary attempts to locate the codex executable.
+// First tries the PATH, then checks common installation locations.
+func findCodexBinary() (string, error) {
+	// Try PATH first
+	if path, err := exec.LookPath("codex"); err == nil {
+		return path, nil
+	}
+
+	// Check common installation locations
+	commonPaths := []string{
+		"/opt/homebrew/bin/codex",
+		"/usr/local/bin/codex",
+		"/usr/bin/codex",
+	}
+
+	for _, path := range commonPaths {
+		if _, err := os.Stat(path); err == nil {
+			return path, nil
+		}
+	}
+
+	return "", errors.New("codex executable not found in PATH or common locations")
+}
+
 func (a *CodexAdapter) Run(ctx context.Context, cfg RunConfig) (*RunResult, error) {
 	if cfg.WorkDir == "" {
 		return nil, errors.New("workdir is required")
@@ -104,7 +128,13 @@ func (a *CodexAdapter) Run(ctx context.Context, cfg RunConfig) (*RunResult, erro
 			_ = promptFile.Close()
 		}()
 
-		cmd := exec.CommandContext(runCtx, "codex", args...)
+		// Find codex binary (with fallback to common locations)
+		codexBinary, err := findCodexBinary()
+		if err != nil {
+			return fmt.Errorf("find codex: %w", err)
+		}
+
+		cmd := exec.CommandContext(runCtx, codexBinary, args...)
 		cmd.Dir = workDir
 		cmd.Stdout = transcriptFile
 		cmd.Stderr = io.MultiWriter(transcriptFile)
