@@ -917,9 +917,36 @@ func runKRMeasure(args []string, workspacePath string) error {
 		return err
 	}
 
+	// Update KR status based on metrics
+	changes, err := metrics.UpdateKRStatus(resolved.OKRsDir, &snapshot)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: status update failed: %v\n", err)
+	} else if len(changes) > 0 {
+		for _, change := range changes {
+			fmt.Fprintf(os.Stdout, "Status updated: %s %s -> %s (%.0f/%.0f)\n",
+				change.KRID, change.OldStatus, change.NewStatus, change.Current, change.Target)
+			
+			auditPayload := map[string]any{
+				"kr_id":        change.KRID,
+				"objective_id": change.ObjectiveID,
+				"old_status":   change.OldStatus,
+				"new_status":   change.NewStatus,
+				"current":      change.Current,
+				"target":       change.Target,
+				"evidence":     change.Evidence,
+				"trigger":      "kr_measure_cli",
+				"snapshot":     snapshotPath,
+			}
+			_ = logger.LogEvent("okr", "kr_status_auto_updated", auditPayload)
+		}
+	}
+
 	finishPayload := map[string]any{
 		"snapshot_path": snapshotPath,
 		"point_count":   len(points),
+	}
+	if len(changes) > 0 {
+		finishPayload["status_changes"] = len(changes)
 	}
 	_ = logger.LogEvent("cli", "kr_measure_finished", finishPayload)
 

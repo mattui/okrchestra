@@ -175,10 +175,11 @@ func (d *Daemon) claimAndExecute(ctx context.Context) error {
 		return err
 	}
 
-	// Add store and notifier to context for handlers that need them
+	// Add store, notifier, and audit logger to context for handlers that need them
 	ctxWithStore := context.WithValue(ctx, "daemon_store", d.Store)
 	ctxWithNotifier := context.WithValue(ctxWithStore, "daemon_notifier", d.Notifier)
-	result, execErr := handler(ctxWithNotifier, d.Workspace, job)
+	ctxWithAudit := context.WithValue(ctxWithNotifier, "daemon_audit_logger", d.AuditLogger)
+	result, execErr := handler(ctxWithAudit, d.Workspace, job)
 
 	if execErr != nil {
 		_ = d.Store.Fail(job.ID, execErr)

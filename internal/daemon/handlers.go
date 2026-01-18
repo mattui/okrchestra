@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"okrchestra/internal/adapters"
+	"okrchestra/internal/audit"
 	"okrchestra/internal/metrics"
 	"okrchestra/internal/notify"
 	"okrchestra/internal/planner"
@@ -88,10 +89,57 @@ func handleKRMeasure(ctx context.Context, ws *workspace.Workspace, job *Job) (an
 		return nil, fmt.Errorf("write snapshot: %w", err)
 	}
 
-	return map[string]any{
+	// Update KR status based on metrics
+	changes, err := metrics.UpdateKRStatus(ws.OKRsDir, &snapshot)
+	if err != nil {
+		// Log error but don't fail the job - metrics collection succeeded
+		fmt.Fprintf(os.Stderr, "update kr status failed: %v\n", err)
+	} else if len(changes) > 0 {
+		// Log status changes to audit log
+		if auditLogger, ok := ctx.Value("daemon_audit_logger").(*audit.Logger); ok && auditLogger != nil {
+			for _, change := range changes {
+				auditPayload := map[string]any{
+					"kr_id":        change.KRID,
+					"objective_id": change.ObjectiveID,
+					"old_status":   change.OldStatus,
+					"new_status":   change.NewStatus,
+					"current":      change.Current,
+					"target":       change.Target,
+					"evidence":     change.Evidence,
+					"trigger":      "metrics_snapshot",
+					"snapshot":     snapshotPath,
+				}
+				_ = auditLogger.LogEvent("okr", "kr_status_auto_updated", auditPayload)
+			}
+		}
+		
+		// Send notifications for status changes
+		if notifier, ok := ctx.Value("daemon_notifier").(*notify.Notifier); ok && notifier != nil {
+			for _, change := range changes {
+				title, message := notify.FormatKRStatusChange(
+					change.KRID,
+					change.KRDesc,
+					change.OldStatus,
+					change.NewStatus,
+					change.Current,
+					change.Target,
+				)
+				// Send notification (ignore errors - notifications are best-effort)
+				_ = notifier.Send(title, message)
+			}
+		}
+	}
+
+	result := map[string]any{
 		"snapshot_path": snapshotPath,
 		"metric_count":  len(points),
-	}, nil
+	}
+	
+	if len(changes) > 0 {
+		result["status_changes"] = len(changes)
+	}
+
+	return result, nil
 }
 
 // handlePlanGenerate implements the plan_generate job handler.

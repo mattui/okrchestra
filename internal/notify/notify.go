@@ -55,3 +55,25 @@ func FormatPlanComplete(planID string, itemsTotal, itemsSucceeded, itemsFailed i
 	}
 	return title, message
 }
+
+// FormatKRAchieved formats a KR achievement notification message.
+func FormatKRAchieved(krID, description string, current, target float64) (title, message string) {
+	title = "🎉 OKRchestra KR Achieved"
+	message = fmt.Sprintf("%s: %s (%.0f/%.0f)", krID, description, current, target)
+	return title, message
+}
+
+// FormatKRStatusChange formats a KR status change notification message.
+func FormatKRStatusChange(krID, description, oldStatus, newStatus string, current, target float64) (title, message string) {
+	switch newStatus {
+	case "achieved":
+		return FormatKRAchieved(krID, description, current, target)
+	case "in_progress":
+		title = "🚀 OKRchestra KR In Progress"
+		message = fmt.Sprintf("%s: %s (%.0f/%.0f)", krID, description, current, target)
+	default:
+		title = "📊 OKRchestra KR Status Update"
+		message = fmt.Sprintf("%s: %s → %s", krID, oldStatus, newStatus)
+	}
+	return title, message
+}
